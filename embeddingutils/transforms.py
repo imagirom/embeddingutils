@@ -1,4 +1,3 @@
-import torch
 from inferno.io.transform import Transform
 import torch
 from embeddingutils.affinities import embedding_to_affinities, label_equal_similarity_with_mask_le, label_equal_similarity_with_mask_max_le
@@ -25,7 +24,7 @@ class Segmentation2AffinitiesWithPadding(Transform):
         ttensor = torch.from_numpy(tensor[None])
 
         def am(e1, e2, dim=0):
-            return label_equal_similarity_with_mask_le(e1, e2, ignore_label_le=self.ignore_label)
+            return label_equal_similarity_with_mask_le(e1, e2, dim=dim, ignore_label_le=self.ignore_label)
 
         out = embedding_to_affinities(ttensor,
                                       offsets=self.offsets,
