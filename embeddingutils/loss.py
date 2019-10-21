@@ -1,8 +1,3 @@
-from torch.nn.functional import cosine_similarity
-import inferno.utils.torch_utils as thu
-import torch
-import torch.nn.functional as F
-import numpy as np
 from embeddingutils.affinities import *
 from inferno.extensions.criteria.set_similarity_measures import SorensenDiceLoss
 import inferno.utils.train_utils as tu
@@ -68,7 +63,8 @@ class ScalarLoggingMixin:
 
 class WeightedLoss(ScalarLoggingMixin, torch.nn.Module):
 
-    def __init__(self, loss_weights=None, trainer=None, loss_names=None, meta_tag=None):
+    def __init__(self, loss_weights=None, trainer=None, loss_names=None, meta_tag=None,
+                 transforms=None, with_side_losses=False):
         super(WeightedLoss, self).__init__()
         self.loss_weights = loss_weights
         self.meta_tag = type(self).__name__ if meta_tag is None else meta_tag
@@ -81,8 +77,35 @@ class WeightedLoss(ScalarLoggingMixin, torch.nn.Module):
         self.logging_enabled = False
         self.trainer = trainer
         self.validation_averages = None  # Used to keep track of averages during validation
+        # weather or not the input will be a list of preds, on which the list should be applied separately
+        self.with_side_losses = with_side_losses  # TODO: add weights to side losses
+        self.name_prefix = ''  # for logging of side losses
+        # transforms to apply on the preds and labels before self.get_losses
+        self.transforms = transforms
 
-    def forward(self, preds, labels):
+    def forward(self, preds, labels, with_side_losses=None):
+        # For two loss names fgbg and emb, and two intermediate stages, the logging tags will be:
+        # _total
+        # out0_total
+        # out0_fgbg
+        # out0_emb
+        # 1_total
+        # 1_fgbg
+        # 1_emb
+        with_side_losses = with_side_losses if with_side_losses is None else self.with_side_losses
+        with_side_losses = type(preds) is tuple if with_side_losses is None else with_side_losses
+        if with_side_losses:
+            # iterate over predictions
+            total_losses = []
+            for i, pred in enumerate(preds):
+                self.name_prefix = f'out{i}_' if i < len(preds) - 1 else ''
+                total_losses.append(self.forward(pred, labels, with_side_losses=False))
+            total_loss = torch.stack(total_losses).sum()
+            self.save_scalar('_totaltotal', total_loss.detach())
+            return total_loss
+        # apply transformations if specified
+        if self.transforms is not None:
+            preds, labels = self.transforms(preds, labels)
         losses = self.get_losses(preds, labels)
         loss = 0
         for i, current in enumerate(losses):
@@ -98,6 +121,9 @@ class WeightedLoss(ScalarLoggingMixin, torch.nn.Module):
         total_loss = loss.mean()
         self.save_scalar('_total', total_loss.detach())
         return total_loss
+
+    def save_scalar(self, name, value, **kwargs):
+        super(WeightedLoss, self).save_scalar(self.name_prefix + name, value, **kwargs)
 
     def save_losses(self, losses):
         if self.trainer is None:
@@ -152,7 +178,6 @@ class SumLoss(WeightedLoss):
             # calculate mini-batch average of L2 norms of gradients on model prediction
             grad = grad.view(grad.size(0), grad.size(1), -1)
             grad_norms = torch.norm(grad, dim=2).mean(dim=1)
-            # divide by loss weights to get unweighted grad norms that are comparable for different weights
             self.save_grad_stats('norm', grad_norms)
         if 'max' in self.grad_stats:
             # calculate the maximum gradient applied on a single pixel.
@@ -614,17 +639,21 @@ class NevenMaskLoss(WeightedLoss):
         instance_ids = instance_ids[instance_ids != self.ignore_label]
         losses = [self.get_loss_single_instance(instance_id, embedding, sigmas, seed_map, gt_seg)
                   for instance_id in instance_ids]
-        losses = torch.stack([torch.stack(loss) for loss in losses])
+        losses = torch.stack([torch.stack(loss) for loss in losses]).mean(0)
 
         # regress seeds to 0 on background
         if self.ignore_label is not None:
-            losses[-1] += ((seed_map[gt_seg == self.ignore_label]) ** 2).mean()
-        return losses.mean(0)
+            bg_seeds = seed_map[gt_seg == self.ignore_label]
+            if bg_seeds.nelement() > 0:
+                n_pixels = gt_seg.nelement()
+                losses[-1] += (bg_seeds ** 2).sum() / n_pixels
+        return losses
 
     def predicted_instance_mask(self, embedding, target_embedding, sigma):
         return torch.exp(-((embedding - target_embedding[(slice(None),) + self.spatial_dim*(None,)]) ** 2).sum(0, keepdim=True) / sigma ** 2)
 
     def get_loss_single_instance(self, instance_id, embedding, sigmas, seed_maps, gt_seg):
+        assert False, f'Debug this code before using it! There might be NaNs arising because of empty masks'
         instance_mask = (gt_seg == instance_id)[0]  # (1, W, H)
 
         # the target embedding is the mean of embedding vectors of pixels in instance
@@ -656,6 +685,10 @@ class NevenMaskLossParallel(NevenMaskLoss):
     def get_losses_single_sample(self, embedding, sigmas, seed_map, gt_seg):
         instance_ids = gt_seg.unique()
         instance_ids = instance_ids[instance_ids != self.ignore_label]
+
+        if len(instance_ids) == 0:
+            print('Skipping sample, no segments found.')
+            return embedding.new_zeros(3)
 
         # compute ground truth instance masks
         instance_masks = gt_seg.eq(instance_ids[(slice(None),) + (None,) * self.spatial_dim])  # I D H W
