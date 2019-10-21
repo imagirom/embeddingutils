@@ -362,18 +362,19 @@ class MeanShiftLayer(MeanShift):
         return embedding
 
 
-class ChannelSliceWrapper(torch.nn.Module):
+class TakeChannels(nn.Module):
     """
-    Wrapper to apply a module only to some channels.
+    Take the first n channels of the inputs.
     """
-    def __init__(self, module, start=0, stop=None):
-        super(ChannelSliceWrapper, self).__init__()
-        self.slice = slice(start, stop)
-        self.module = module
+    def __init__(self, stop):
+        super(TakeChannels, self).__init__()
+        self.stop = stop
 
     def forward(self, input):
-        input[:, self.slice] = self.module(input[:, self.slice])
-        return input
+        if type(input) is tuple:
+            return tuple(x[:, :self.stop] for x in input)
+        else:
+            return input[:, :self.stop]
 
 
 if __name__ == '__main__':
