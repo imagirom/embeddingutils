@@ -1,4 +1,4 @@
-from inferno.extensions.containers.graph import Graph, Identity
+from inferno.extensions.containers.graph import Identity
 
 from inferno.extensions.layers.convolutional import ConvELU3D, Conv3D, BNReLUConv3D
 from inferno.extensions.layers.convolutional import ConvELU2D, Conv2D, BNReLUConv2D
@@ -152,7 +152,6 @@ class UNet3D(UNetSkeleton):
                  upsampling_mode='nearest',
                  *super_args, **super_kwargs):
 
-
         self.final_activation = [final_activation] if final_activation is not None else None
 
         # parse conv_type
@@ -184,7 +183,6 @@ class UNet3D(UNetSkeleton):
         self.divisibility_constraint = list(divisibility_constraint.astype(int))
 
         super(UNet3D, self).__init__(*super_args, **super_kwargs)
-        # self.setup_graph()  # TODO: this is ugly. do it when forward() is called for the first time?
 
     def construct_conv(self, f_in, f_out, kernel_size=3):
         return self.conv_type(f_in, f_out, kernel_size=kernel_size)
