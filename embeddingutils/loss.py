@@ -79,7 +79,7 @@ class WeightedLoss(ScalarLoggingMixin, torch.nn.Module):
         self.validation_averages = None  # Used to keep track of averages during validation
         # weather or not the input will be a list of preds, on which the list should be applied separately
         self.with_side_losses = with_side_losses  # TODO: add weights to side losses
-        self.name_prefix = ''  # for logging of side losses
+        self.name_prefix = '_'  # for logging of side losses
         # transforms to apply on the preds and labels before self.get_losses
         self.transforms = transforms
 
@@ -98,7 +98,7 @@ class WeightedLoss(ScalarLoggingMixin, torch.nn.Module):
             # iterate over predictions
             total_losses = []
             for i, pred in enumerate(preds):
-                self.name_prefix = f'out{i}_' if i < len(preds) - 1 else ''
+                self.name_prefix = f'out{i}_' if i < len(preds) - 1 else '_'
                 total_losses.append(self.forward(pred, labels, with_side_losses=False))
             total_loss = torch.stack(total_losses).sum()
             self.save_scalar('_totaltotal', total_loss.detach())
@@ -212,6 +212,9 @@ class SumLoss(WeightedLoss):
 
         result = []
         for pred, labels, loss in zip(pred_per_loss, label_per_loss, self.losses):
+            if isinstance(loss, WeightedLoss):
+                # for the case of side losses, copy prefix for current output
+                loss.name_prefix = self.name_prefix
             result.append(loss(pred, labels))
         return result
 
@@ -281,7 +284,6 @@ class LossSegmentwiseFreeTags(WeightedLoss):
         self.pull_margin = pull_margin
         self.pull_weighting = pull_weighting
         assert callable(self.pull_weighting) or self.pull_weighting in self.PULL_WEIGHTINGS
-
 
     def get_push_weights(self, segment_sizes, n_segments, n_pixels, n_active_pixels):
         if callable(self.push_weighting):
@@ -597,9 +599,11 @@ class NevenMaskLoss(WeightedLoss):
             - general gaussians
             - weights of a couple of 1x1 convolutions
     """
+    _DICE_LOSS = SorensenDiceLoss(channelwise=True)
     BINARY_LOSSES = {
         'BCE': torch.nn.BCELoss(),
-        'Dice': SorensenDiceLoss(channelwise=True),
+        'Dice': _DICE_LOSS,
+        'InvertedDice': lambda pred, target: NevenMaskLoss._DICE_LOSS(1-pred, 1-target),
         'LovaszHinge': lambda pred, label: lovasz_hinge(2 * pred - 1, label, per_image=True),
     }
     def __init__(self, loss_weights=(1, 1, 1), ignore_label=None, log_masks=0, binary_loss='BCE', spatial_dim=3,
